@@ -1,0 +1,337 @@
+---
+title: "multi_fe"
+author: "RZ"
+date: "7/23/2019"
+output: pdf_document
+---
+
+## Pac
+```{r}
+
+library(ggplot2) 
+library(reshape2) 
+library(latex2exp) 
+library(MASS)
+library(zoo)
+library(MLmetrics)
+#library(hydroGOF)
+```
+
+
+## creating data
+```{r}
+
+
+
+
+#n个病人一共
+#m个feature
+#r.e有K种
+#生成数据函数
+generate_data <- function(
+                          n = 150,
+                          m = 4,
+                          beta = c(1,3,9,7),
+                          K = 10, 
+                          sigma1 = 3){
+
+  X1 = matrix(rnorm(n*m),n,m)
+  r_e = round(runif(n,1,K))
+
+  X = rep(list(matrix(0,1,m)),K)
+  Y = rep(list(matrix(0,1,1)),K)
+  
+  for(i in c(1:n)){
+
+    X[[r_e[i]]] = rbind(X[[r_e[i]]],unlist(X1[i,]))
+    Y[[r_e[i]]] = rbind(Y[[r_e[i]]],c(0))
+  }    
+  
+  for(i in c(1:K)){
+    X[[i]] = X[[i]][-1,] 
+    Y[[i]] = Y[[i]][-1,]
+  }
+  #制造一个与X同结构的 y放label
+
+
+  
+  Z1 = rnorm(K,0,sigma1)
+
+  #matrix(U,n,T_)是一个每一列是U，一共T_列的矩阵
+  #x是10列100行的矩阵 每个元素加上对应的Z1和Z2
+  for(i in c(1:K)){
+    patient_amount = dim(X[[i]])[1]
+    x = X[[i]] %*% beta + Z1[i]
+    P <- exp(x)/(1+exp(x))
+    Y[[i]] <- ifelse(matrix(runif(patient_amount*1),patient_amount,1) < P, 1, 0)
+  }
+
+  return(list(X,Y,Z1,r_e)) 
+  }
+alldata <- generate_data() 
+X = alldata[[1]]
+Y = alldata[[2]]
+Z = alldata[[3]]
+Z_index = alldata[[4]]
+Z_index
+
+```
+
+
+##real parameters 已知Z1的情况下算para，真实应用的时候数据里没有Z1，需要samply
+```{r}
+real_parameters <- function(X,Y,Z1,initial_beta = c(1,1,3,2)){ 
+  num_fe = dim(X[[1]])[2]
+
+  K = length(Z1)
+  #real_sigma1 就是 Z1的
+  real_sigma1 <- sqrt(mean(Z1^2)) 
+  real_beta=initial_beta
+  epi <- 2
+
+
+  #这里的f2就是likelihood l 对 beta的二阶导
+  while (epi > 1e-2) {
+    H = matrix(0,num_fe,num_fe)
+    for(i in c(1:num_fe)){
+      for(j in c(1:num_fe)){
+        f2 = rep(0,K)
+        for(k in c(1:K)){
+          num_pat = dim(X[[k]])[1]
+          f2[k] = sum(X[[k]][,i] * X[[k]][,j] * exp(X[[k]] %*% real_beta  + rep(Z1[k],num_pat)) /(1+exp(X[[k]] %*% real_beta  + rep(Z1[k],num_pat)))^2)
+          
+        }
+        H[i,j] = sum(f2)
+        
+      }
+      
+    }
+    #print(H)
+    H_inverse = solve(H)
+    
+    #f2 <- sum(apply(X1^2 * exp(real_beta1 * X1 + Z1_mat) /(1+exp(real_beta1 * X1 + Z1_mat))^2, 1, sum)) 
+    #if (f2_b1b2*f2_b1*f2_b2 == 0){
+    #  break
+    #}
+    
+    f1 = rep(0,num_fe)
+    for(i in c(1:num_fe)){
+      temp = rep(0,K)
+      for(k in c(1:K)){
+        num_pat = dim(X[[k]])[1]
+        temp[k] = sum(X[[k]][,i] * (Y[[k]] - 1 + 1 /(1 + exp(X[[k]] %*% real_beta  + rep(Z1[k],num_pat)))))
+      }
+      f1[i] = sum(temp)
+    }
+    #print("f1")
+    #print(f1)
+    
+    updata = H_inverse %*% f1
+    #print(updata)
+    
+    new_beta = real_beta + updata 
+    epi = max(abs(new_beta - real_beta))
+    real_beta <- new_beta
+    #print(real_beta)
+   
+  }
+
+    return(list(real_beta, real_sigma1)) 
+}
+
+true_value = real_parameters(X,Y,Z)
+true_value
+
+```
+
+
+
+## MH
+```{r}
+#MH = Metropolis Hasting
+#给定一个现有beta和sigma，我们开始做MH，每次生成10个抽样，然后MH过滤
+
+MH <- function(beta, X, Y, K, burnin, sigma,n){ 
+  #初始化Z1
+  Z1 = rnorm(n,0,sigma)
+  #Z1_MH是matrix，里面是Z
+  Z1_MH = array(0,dim = c(n,K+burnin))
+  sum = 0
+  sum_t = 0
+  for (i in 1:(K+burnin)) {
+    #每一次mcmc生成该回合的Z1
+    #开始MH filter
+    #apply(Y, 1, sum) Y按行每行相加，最后得到一个array 长度为行数，第i个元素是第i列的求和
+    #A1得到一个10*100的矩阵 用来filter Z里10*100
+    newZ1 <- rnorm(n,mean = 0,sd = sigma) 
+    A1 = rep(0,n)
+    for( j in c(1:n)){
+      num_pat = dim(X[[j]])[1]
+      A1[j] <- sum(Y[[j]] * (newZ1[j] - Z1[j])) + sum(log(1 + exp( X[[j]] %*% beta + rep(Z1[j],num_pat))) - log(1 + exp( X[[j]] %*% beta + rep(newZ1[j],num_pat))))
+    }
+
+    
+    Z1 <- ifelse(log(runif(n)) > A1, Z1, newZ1)
+    #print(Z1)
+    t = ifelse(Z1 == newZ1, yes = 1, 0)
+    sum = sum+sum(t)
+    sum_t = sum_t + n
+    Z1_MH[,i] <- Z1
+  }
+  print(sum)
+  print(sum_t)
+  #Z1_MH变为之后要用的samples 
+  Z1_MH <- Z1_MH[,-c(1:burnin)] 
+  
+  return(Z1_MH)
+}
+
+a = MH(c(1,2,6,1), X, Y, 300, 100, 2,10)
+
+#a[-1]
+#Z1_list = MH(3.5, X1, Y1, 200, 100, n = 10,T_ = 15, sigma1 = 2, 100,var = 0.8)
+#sigma1 = sqrt(mean(Z1_list^2))
+#sigma1
+
+#Z2_list = MH(3.5, X2, Y2, 50, 10, n = 3, T_ = 50, sigma1 = 6, 100,var = 1)
+#sigma2 = sqrt(mean(Z2_list^2))
+#sigma2
+
+```
+
+
+
+##MCEM
+```{r}
+
+MCEM <- function(beta, sigma1, epsilon0, X, Y,  K, burnin, n = 10, is_plot = T){
+  num_fe = dim(X[[1]])[2]
+  
+  beta_list <- matrix(beta,num_fe,1)
+  
+  sigma1_list <- c(sigma1) 
+  step <- 1
+  epsilon <- 1e10
+  
+  
+  while (epsilon > epsilon0) {
+    
+   
+    
+    # Update parameters
+    
+    epi <- 1
+    #beta1 <- 1
+    while (epi>0.1) {
+      #Z1_list是一个10*K
+      Z1_list = MH(beta, X, Y, K, burnin, sigma1,n)
+
+      sigma1 = sqrt(mean(Z1_list^2)) 
+      print("sigma_1")
+      print(sigma1)
+
+      #10*15*sample_size*K
+
+
+
+    
+      #初始化二阶导，全为0的K维向量
+      
+      
+      H = matrix(0,num_fe,num_fe)
+      for(i in c(1:num_fe)){
+        for(j in c(1:num_fe)){
+          f2 = rep(0,K)
+          for(mc in c(1:K)){
+            temp = rep(0,n)
+            for(k in c(1:n)){
+              num_pat = dim(X[[k]])[1]
+              temp[k] = sum(X[[k]][,i] * X[[k]][,j] * exp(X[[k]] %*% beta  + rep(Z1_list[k,mc],num_pat)) /(1+exp(X[[k]] %*% beta  + rep(Z1_list[k,mc],num_pat)))^2)
+            }
+            f2[mc] = sum(temp)
+          }
+          
+        H[i,j] = sum(f2)
+        
+        }
+      
+    }
+    H_inverse = solve(H) 
+    
+       
+        
+        #f2[i] <- sum(apply(Z_list_sum[,,i], 2, function(z){apply( X1^2 * exp(beta1 * X1 + z) /(1 + exp(beta1 * X1 + z))^2, 1, sum)})) 
+      
+
+      if (det(H_inverse) == 0 ) {
+        break
+      }
+      
+      #f2 = sum(f2)
+      
+      #初始化一阶导
+      
+      f1 = rep(0,num_fe)
+      for(i in c(1:num_fe)){
+        temp2 = rep(0,K)
+        for(mc in c(1:K)){
+          temp = rep(0,n)
+          for(k in c(1:n)){
+          num_pat = dim(X[[k]])[1]
+          temp[k] = sum(X[[k]][,i] * (Y[[k]] - 1 + 1 /(1 + exp(X[[k]] %*% beta  + rep(Z1_list[k,mc],num_pat)))))
+          }
+          temp2[mc] = sum(temp)
+        }
+        
+      f1[i] = sum(temp2)
+    }
+    #print("f1")
+    #print(f1)
+    
+      updata = H_inverse %*% f1
+      #print(updata)
+      
+      new_beta = beta + updata 
+      epi = max(abs(new_beta - beta))
+      beta <- new_beta
+      print("beta")
+      print(beta)
+
+    }
+    
+    
+    
+    epsilon <- max(max( abs(beta - beta_list[,step])), abs(sigma1 - sigma1_list[step]))
+    print("epsilon")
+    print(epsilon)
+    print("beta_list[,step]")
+    print(beta_list[,step])
+    beta_list = cbind(beta_list, beta)
+    sigma1_list[step+1] <- sigma1
+    step <- step + 1 
+  }
+  
+  if (is_plot) {
+    result <- data.frame(beta=beta_list, sigma1 = sigma1_list, t=c(1:length(beta1_list)))
+    print(ggplot(data = melt(result,id = 't',variable.name="parameter") , aes(x=t, y=value, colour=parameter)) +geom_line()+coord_cartesian(ylim=c(0, 11)) +theme_bw() +theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + scale_y_continuous(breaks=seq(0, 11, 1))+labs(title="Parameter Estimated by MCEM", x = 'iteration', y = 'Value'))
+  }
+  
+  return(list( beta, sigma1)) 
+}
+
+```
+
+
+
+```{r}
+
+est_value = MCEM(c(1,2,4,2),3,0.05,X,Y, K = 1000, burnin = 300, n=10, is_plot = F)
+est_value
+```
+
+
+
+
+
+
+

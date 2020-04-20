@@ -1,0 +1,467 @@
+---
+title: "multi_fe"
+author: "RZ"
+date: "7/23/2019"
+output: pdf_document
+---
+
+## Pac
+```{r}
+library(ggplot2) 
+library(reshape2) 
+library(latex2exp) 
+library(MASS)
+library(zoo)
+library(MLmetrics)
+library(Rlab)
+require(Metrics)
+#library(hydroGOF)
+options(digits = 22)
+```
+
+
+## creating simulated data
+```{r}
+#percent is p of beta -> 0
+generate_beta = function(m,v = 0.1 ){
+  beta = rnorm(m,0,v)
+
+  return(beta)
+}
+
+
+
+#n patients
+#m fixed effects
+#K # of r.e categories(how many doctors) 
+
+generate_data <- function(
+                          n = 3000,
+                          m = 150,
+                          beta = generate_beta(m,0.001),
+                          K = 5, 
+                          sigma1 = 6,
+                          p = 0.01){
+  print(beta)
+  pre_X1 = rep(1,n*m)
+  for(v in c(1:(n*m))){
+    genome_seq = rbern(2, p)
+    
+    if(genome_seq[1] == 0){
+      if(genome_seq[2] == 0){
+        pre_X1[v] = 0
+      }
+    }
+    if(genome_seq[1] == 1){
+      if(genome_seq[2] == 1){
+        pre_X1[v] = 2
+      }
+    }
+  }
+ 
+  X1 = matrix(pre_X1,n,m)
+  
+  r_e = round(runif(n,1,K))
+
+  X = rep(list(matrix(0,1,m)),K)
+  Y = rep(list(matrix(0,1,1)),K)
+  
+  for(i in c(1:n)){
+
+    X[[r_e[i]]] = rbind(X[[r_e[i]]],unlist(X1[i,]))
+    Y[[r_e[i]]] = rbind(Y[[r_e[i]]],c(0))
+  }    
+  
+  for(i in c(1:K)){
+    X[[i]] = X[[i]][-1,] 
+    Y[[i]] = Y[[i]][-1,]
+  }
+  #Creating Y, same sturcture with X
+
+
+  
+  Z1 = rnorm(K,0,sigma1)
+
+  #X is K*n, Z1 is corresponding random effect
+
+  for(i in c(1:K)){
+    patient_amount = dim(X[[i]])[1]
+    x = X[[i]] %*% beta + Z1[i]
+    P <- exp(x)/(1+exp(x))
+    Y[[i]] <- ifelse(matrix(runif(patient_amount*1),patient_amount,1) < P, 1, 0)
+  }
+
+  return(list(X,Y,Z1,r_e)) 
+  }
+alldata <- generate_data() 
+X = alldata[[1]]
+Y = alldata[[2]]
+Z = alldata[[3]]
+Z_index = alldata[[4]]
+
+save(X,file='/home/huthvincent/Desktop/glmm/150/Fed_GLMM/X.Rdata')
+save(Y,file='/home/huthvincent/Desktop/glmm/150/Fed_GLMM/Y.Rdata')
+save(Z,file='/home/huthvincent/Desktop/glmm/150/Fed_GLMM/Z.Rdata')
+```
+
+
+##compute real parameters.
+```{r}
+load("/home/huthvincent/Desktop/glmm/150/Fed_GLMM/X.Rdata")
+load("/home/huthvincent/Desktop/glmm/150/Fed_GLMM/Y.Rdata")
+load("/home/huthvincent/Desktop/glmm/150/Fed_GLMM/Z.Rdata")
+real_parameters <- function(X,Y,Z1,real_beta = generate_beta(150,0.001)){ 
+  num_fe = dim(X[[1]])[2]
+
+  K = length(Z1)
+  #real_sigma1 is var of Z1
+  real_sigma1 <- sqrt(mean(Z1^2)) 
+  epi <- 2
+
+
+  #f2 is Hessian
+  while (epi > 1e-3) {
+    H = matrix(0,num_fe,num_fe)
+    for(i in c(1:num_fe)){
+      for(j in c(i:num_fe)){
+        f2 = rep(0,K)
+        for(k in c(1:K)){
+          num_pat = dim(X[[k]])[1]
+
+          f2[k] = sum(X[[k]][,i] * X[[k]][,j] * exp(X[[k]] %*% real_beta  + rep(Z1[k],num_pat)) / (1+exp(X[[k]] %*% real_beta  + rep(Z1[k],num_pat)))^2)
+          
+        }
+        H[i,j] = sum(f2)
+        H[j,i] = H[i,j]
+        #print(H[i,j])
+        
+      }
+      
+    }
+    save(H,file='/home/huthvincent/Desktop/H.Rdata')
+    print("det of H")
+    print(det(H))
+    H_inverse = solve(H)
+    print("det of H-1")
+    print(det(H_inverse))
+    #f2 <- sum(apply(X1^2 * exp(real_beta1 * X1 + Z1_mat) /(1+exp(real_beta1 * X1 + Z1_mat))^2, 1, sum)) 
+    #if (f2_b1b2*f2_b1*f2_b2 == 0){
+    #  break
+    #}
+    
+    f1 = rep(0,num_fe)
+    for(i in c(1:num_fe)){
+      temp = rep(0,K)
+      for(k in c(1:K)){
+        num_pat = dim(X[[k]])[1]
+        
+        temp[k] = sum(X[[k]][,i] * (Y[[k]] - 1 + 1 /(1 + exp(X[[k]] %*% real_beta  + rep(Z1[k],num_pat)))))
+      }
+      f1[i] = sum(temp)
+    }
+    #print("f1")
+    #print(f1)
+    
+    updata = H_inverse %*% f1
+    print("update")
+    print(mean(abs(updata)))
+    
+    new_beta = real_beta + updata 
+    epi = max(abs(new_beta - real_beta))
+    real_beta <- new_beta
+    #print(real_beta)
+    print("epi")
+    print(epi)
+   
+  }
+
+    return(list(real_beta, real_sigma1)) 
+}
+
+true_value = real_parameters(X,Y,Z)
+true_value
+
+```
+
+
+## MH
+```{r}
+#MH = Metropolis Hasting
+#Giving current beta and sigma，now we do MH to optimize Z1
+
+MH <- function(beta, X, Y, K, burnin, sigma,n,Z1){ 
+  #init Z1
+  #Z1 = rnorm(n,0,sigma)
+  #Z1_MH is  matrix，store all sampling Z
+  Z1_MH = array(0,dim = c(n,K+burnin))
+  sum = 0
+  sum_t = 0
+  for (i in 1:(K+burnin)) {
+
+    newZ1 <- rnorm(n,mean = 0,sd = sigma) 
+    A1 = rep(0,n)
+    for( j in c(1:n)){
+      num_pat = dim(X[[j]])[1]
+      A1[j] <- sum(Y[[j]] * (newZ1[j] - Z1[j])) + sum(log(1 + exp( X[[j]] %*% beta + rep(Z1[j],num_pat))) - log(1 + exp( X[[j]] %*% beta + rep(newZ1[j],num_pat))))
+    }
+
+    
+    Z1 <- ifelse(log(runif(n)) > A1, Z1, newZ1)
+    #print(Z1)
+    t = ifelse(Z1 == newZ1, yes = 1, 0)
+    sum = sum+sum(t)
+    sum_t = sum_t + n
+    Z1_MH[,i] <- Z1
+  }
+  print(sum)
+  print(sum_t)
+  #Z1_MH is the final used sampling pool
+  Z1_MH <- Z1_MH[,-c(1:burnin)] 
+  
+  return(Z1_MH)
+}
+
+# test
+a = MH( generate_beta(150,0.1), X, Y, 2, 590, 10,5,rnorm(5,0,2))
+
+#a[-1]
+#Z1_list = MH(3.5, X1, Y1, 200, 100, n = 10,T_ = 15, sigma1 = 2, 100,var = 0.8)
+#sigma1 = sqrt(mean(Z1_list^2))
+#sigma1
+
+#Z2_list = MH(3.5, X2, Y2, 50, 10, n = 3, T_ = 50, sigma1 = 6, 100,var = 1)
+#sigma2 = sqrt(mean(Z2_list^2))
+#sigma2
+
+```
+
+
+##MCEM
+```{r}
+
+MCEM <- function(beta, sigma1, epsilon0, X, Y,  K, burnin, n = 5, is_plot = T){
+  num_fe = dim(X[[1]])[2]
+  a = 0
+  beta_list <- matrix(beta,num_fe,1)
+  init_beta = beta
+  sigma1_list <- c(sigma1) 
+  mse_list = c(mean(abs((beta-true_value[[1]])/true_value[[1]])))
+  epi_list = c(0.6)
+  step <- 1
+  epsilon <- 1e10
+  Z1 = rnorm(n,0,sigma1)
+  
+  while (epsilon > epsilon0) {
+    
+   
+    
+    # Update parameters
+    
+    epi <- 1
+    #beta1 <- 1
+
+    
+    Z1_list = MH(beta, X, Y, K, burnin, sigma1,n,Z1)
+    a = a+1000
+    Z1 = Z1_list[,length(K+burnin)]
+    sigma1 = sqrt(mean(Z1_list^2)) 
+    print("sigma_1")
+    print(sigma1)
+
+      #10*15*sample_size*K
+
+
+    while (epi>0.1) {
+    
+      #
+      #K : how many MC iter 
+      #n : how many hospital , k \in n
+      #
+      a = a + 1
+      H = matrix(0,num_fe,num_fe)
+      for(i in c(1:num_fe)){
+          #if (i%%100 == 0){
+            #print("in outter loop")
+            #print(i)
+          #}
+
+        for(j in c(i:num_fe)){
+
+          f2 = rep(0,K)
+          for(mc in c(1:K)){
+            temp = rep(0,n)
+            for(k in c(1:n)){
+              num_pat = dim(X[[k]])[1]
+              temp[k] = sum(X[[k]][,i] * X[[k]][,j] * exp(X[[k]] %*% beta  + rep(Z1_list[k,mc],num_pat)) /(1+exp(X[[k]] %*% beta  + rep(Z1_list[k,mc],num_pat)))^2)
+            }
+            f2[mc] = sum(temp)
+          }
+          
+        H[i,j] = sum(f2)
+        #print(H[i,j])
+        H[j,i] = H[i,j]
+        
+        }
+      
+      }
+    print("start solving H")
+    H_inverse = solve(H) 
+    print("Finished solving H")
+    print(det(H_inverse))
+       
+        
+        #f2[i] <- sum(apply(Z_list_sum[,,i], 2, function(z){apply( X1^2 * exp(beta1 * X1 + z) /(1 + exp(beta1 * X1 + z))^2, 1, sum)})) 
+      
+
+    if (det(H_inverse) == 0 ) {
+      print("warning")
+      print(det(H_inverse))
+      break
+      
+    }
+      
+    #f2 = sum(f2)
+      
+    #init f'
+      
+    f1 = rep(0,num_fe)
+    for(i in c(1:num_fe)){
+      temp2 = rep(0,K)
+      for(mc in c(1:K)){
+        temp = rep(0,n)
+        for(k in c(1:n)){
+          num_pat = dim(X[[k]])[1]
+          temp[k] = sum(X[[k]][,i] * (Y[[k]] - 1 + 1 /(1 + exp(X[[k]] %*% beta  + rep(Z1_list[k,mc],num_pat)))))
+        }
+        temp2[mc] = sum(temp)
+        }
+        
+      f1[i] = sum(temp2)
+    }
+    #print("f1")
+    #print(f1)
+    
+    updata = H_inverse %*% f1
+    print("update")
+    print(mean(abs(updata)))
+    
+      
+    new_beta = beta + updata 
+    epi = mean(abs(new_beta - beta))
+    beta <- new_beta
+  
+    
+    #print("beta")
+    #print(beta)
+
+  }
+  print("MSE")
+  print(mean(abs((beta-true_value[[1]]))))
+  mse_list = append(mse_list,mean(abs((beta-true_value[[1]]))))  
+    
+    
+  #epsilon <- max(mean( abs(beta - beta_list[,step])), abs(sigma1 - sigma1_list[step]))
+  epsilon <- mean( abs(beta - beta_list[,step]))
+  #epsilon <- max(mean( abs(beta - beta_list[,step])), abs((sigma1 - sigma1_list[step])/sigma1_list[step]))
+  
+  print("epsilon")
+  print(epsilon)
+  epi_list = append(epi_list,epsilon)
+
+  beta_list = cbind(beta_list, beta)
+  sigma1_list[step+1] <- sigma1
+  step <- step + 1 
+  if(length(epi_list)>3){
+    if(epi_list[length(epi_list)]<0.08 & epi_list[length(epi_list)-1]<0.07 & epi_list[length(epi_list)-2]<0.06){
+    break
+  }
+  }
+}
+  if (is_plot ) {
+    result <- data.frame(beta=beta_list, sigma1 = sigma1_list, t=c(1:length(beta1_list)))
+    print(ggplot(data = melt(result,id = 't',variable.name="parameter") , aes(x=t, y=value, colour=parameter)) +geom_line()+coord_cartesian(ylim=c(0, 11)) +theme_bw() +theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + scale_y_continuous(breaks=seq(0, 11, 1))+labs(title="Parameter Estimated by MCEM", x = 'iteration', y = 'Value'))
+  }
+  print("communication")
+  print(a)
+  return(list( beta, sigma1_list,epi_list,mse_list,init_beta,beta_list)) 
+}
+
+```
+
+
+
+```{r}
+
+timestart<-Sys.time()
+est_value = MCEM(generate_beta(150,0.01),7.6,0.005,X,Y, K = 2, burnin = 998, n=5, is_plot = F)
+save(est_value,file='/home/huthvincent/Desktop/cGLMM/draw_graph/GLMM_est_value.Rdata')
+timeend<-Sys.time()
+runningtime<-timeend-timestart
+print(runningtime)    
+```
+
+
+# Save GLMM init, in order to let cGLMM use
+```{r}
+init_beta = est_value[[5]]
+save(init_beta,file='/home/huthvincent/Desktop/cGLMM/init_beta.Rdata')
+```
+
+
+#GLMM graph
+```{r}
+
+options(digits = 3)
+
+iter = c(1:length(est_value[[3]]))
+single_core_epi_list = est_value[[3]]
+single_core_mse_list =est_value[[4]]
+
+
+dt <- data.frame(epi_acc = c(single_core_epi_list, single_core_mse_list) ,iteration = rep(c(1:length(est_value[[4]])),2),categ = c(rep("epsilon", length(est_value[[3]])),rep("mse", length(est_value[[4]]))))
+ggplot(dt, aes(x=iteration, y=epi_acc, group=categ, color=categ)) +geom_line()
+
+
+```
+## cGLMM
+```{r}
+
+options(digits = 3)
+iter = c(1:length(est_value[[3]]))
+
+load('/home/huthvincent/Desktop/cGLMM/draw_graph/cGLMM_est_value.Rdata')
+
+multi_est_value = cGLMM_est_value
+epi_list= multi_est_value[[3]]
+
+
+dt <- data.frame(epi = c(epi_list,single_core_epi_list) ,iteration = c(rep(c(1:length(epi_list)),1),rep(c(1:length(single_core_epi_list)),1)), model_type = c(rep("cGLMM", length(epi_list)),rep("GLMM", length(single_core_epi_list))))
+ggplot(dt, mapping = aes(x=iteration, y=epi, color=model_type)) +geom_line(aes(color=model_type))
+```
+
+```{r}
+beta_GLMM = est_value[[1]]
+beta_cGLMM = multi_est_value[[1]]
+options(digits = 13)
+print("GLMM pearson score")
+print(cor(beta_GLMM,true_value[[1]]))
+print("cGLMM pearson score")
+print(cor(beta_cGLMM,true_value[[1]]))
+```
+
+
+
+```{r}
+#beta_sort graph
+
+iter = length(multi_est_value[[1]])
+beta_GLMM = est_value[[1]]
+beta_cGLMM = multi_est_value[[1]]
+true = true_value[[1]]
+df = data.frame(beta_GLMM,beta_cGLMM,true)
+o = order(df[,"true"],df[,"beta_cGLMM"],df[,"beta_GLMM"],decreasing = TRUE)
+df = df[o,]
+dt <- data.frame(abs_beta = c(df$beta_GLMM,df$beta_cGLMM,df$true) ,beta_index = c(rep(c(1:length(beta_GLMM)),3)), model_type = c(rep("GLMM_beta", length(beta_GLMM)),rep("cGLMM_beta", length(beta_cGLMM)),rep("true_beta", length(beta_cGLMM))))
+ggplot(dt, mapping = aes(x=beta_index, y=abs_beta, color=model_type)) +geom_line(aes( color=model_type)) 
+
+```
