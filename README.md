@@ -1,6 +1,6 @@
 # cGLMM
 
-Implementation of the distributed version of GLMM with Homomorphic encryption in R
+Implementation of the distributed version of cGLMM with Homomorphic encryption in R
 
 ## Non-distributed Version of GLMM
 muti_fe_latest.Rmd
