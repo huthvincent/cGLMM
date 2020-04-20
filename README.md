@@ -1,4 +1,4 @@
-# Fed_GLMM
+# cGLMM
 
 Implementation of the distributed version of GLMM with Homomorphic encryption in R
 
