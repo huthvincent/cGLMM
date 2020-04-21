@@ -14,12 +14,20 @@ require(svMisc)
 require(svSocket)
 library(gmp)
 library(homomorpheR)
+
 ### Run instruction
+1. Lanch Rstudio and set the same fold as working direcotry for both client (Fed_GLMM_client_function.r) and server (Fed_GLMM_server.r).
+2. Lanch at least 3 session stand for server, client1, and client2 in Rstudio
+3. At each session, run the corresponding scripts at runFed_GLMM.r
+
+
+### Run instruction(For the HE version)
 1. Run initial_parameters.R to save initial parameters as initial_parameters.RData
 2. Run generate_keyPair.R to save Homomorphic Key Pair as priv_key.RData, pub_key.RData
 3. Lanch Rstudio and set the same fold as working direcotry for both client (Fed_GLMM_client_function.r) and server (Fed_GLMM_server.r).
 4. Lanch at least 3 session stand for server, client1, and client2 in Rstudio
 5. At each session, run the corresponding scripts at runFed_GLMM.r
+
 
 ## Ref:
 [Introduction to Homomorphic Computation in R](
